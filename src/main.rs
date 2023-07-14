@@ -47,6 +47,11 @@ enum Command {
         #[clap(short, long, env = "BORE_SECRET", hide_env_values = true)]
         secret: Option<String>,
     },
+
+    /// Login to a private server.
+    Login {
+
+    }
 }
 
 #[tokio::main]
@@ -74,6 +79,9 @@ async fn run(command: Command) -> Result<()> {
                     .exit();
             }
             Server::new(port_range, secret.as_deref()).listen().await?;
+        },
+        Command::Login {  } => {
+            println!("Logging in");
         }
     }
 
