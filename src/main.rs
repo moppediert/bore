@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bore_cli::{client::Client, server::Server};
+use bore_cli::{client::Client, server::Server, oauth::auth};
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
@@ -50,7 +50,17 @@ enum Command {
 
     /// Login to a private server.
     Login {
+        #[clap(long, env = "OAUTH_CLIENT_ID", hide_env_values = true)]
+        client_id: String,
 
+        #[clap(long, env = "OAUTH_CLIENT_SECRET", hide_env_values = true)]
+        client_secret: Option<String>,
+
+        #[clap(long, env = "OAUTH_AUTH_URL", hide_env_values = true)]
+        auth_url: String,
+
+        #[clap(long, env = "OAUTH_TOKEN_URL", hide_env_values = true)]
+        token_url: String
     }
 }
 
@@ -80,8 +90,13 @@ async fn run(command: Command) -> Result<()> {
             }
             Server::new(port_range, secret.as_deref()).listen().await?;
         },
-        Command::Login {  } => {
-            println!("Logging in");
+        Command::Login { 
+            client_id,
+            client_secret,
+            auth_url,
+            token_url
+         } => {
+            auth(client_id, client_secret, auth_url, token_url);
         }
     }
 
