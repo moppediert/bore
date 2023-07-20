@@ -96,7 +96,7 @@ async fn run(command: Command) -> Result<()> {
             auth_url,
             token_url
          } => {
-            auth(client_id, client_secret, auth_url, token_url);
+            auth(client_id, client_secret, auth_url, token_url).await?;
         }
     }
 
