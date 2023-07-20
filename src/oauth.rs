@@ -1,17 +1,34 @@
 use axum::extract::{Json, Path, Query, State};
+use url::Url;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::str::FromStr;
 
 use anyhow::Result;
 use axum::routing::get;
 use axum::Router;
 use oauth2::basic::BasicClient;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge, RedirectUrl,
-    Scope, StandardRevocableToken, TokenResponse, TokenUrl,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
+    PkceCodeVerifier, RedirectUrl, Scope, StandardRevocableToken, TokenResponse, TokenUrl, IntrospectionUrl, TokenIntrospectionResponse,
 };
 
+use oauth2::reqwest::{http_client, async_http_client};
 use serde::Deserialize;
+
+// TODO: handle error case, e.g. when user denies login
+#[derive(Deserialize)]
+struct AuthResult {
+    code: String,
+    state: String,
+}
+
+#[derive(Clone)]
+struct AuthState {
+    client: BasicClient,
+    csrf_secret: String,
+    pkce_code_verifier: String,
+}
 
 /// Authenticate with Oauth2 Authorization Code Flow with PKCE
 pub async fn auth(
@@ -39,27 +56,32 @@ pub async fn auth(
         .set_pkce_challenge(code_challenge)
         .url();
 
-    
     println!("Open this URL to authenticate: {}", auth_url);
     println!("Own state: {}", csrf_state.secret());
-    
 
-    // TODO: handle error case, e.g. when user denies login
-    #[derive(Deserialize)]
-    struct AuthResult {
-        code: String,
-        state: String,
-        session_state: String,
-    }
-    
-    async fn path(auth_result: Query<AuthResult>, State(csrf_state_secret): State<String>) {
-        assert!(auth_result.state == csrf_state_secret, "State received from OAuth provider does not match initial state, authentication aborted.");
-        println!("Received code: {}", auth_result.code);
-        println!("Received state: {}", auth_result.state);
-        
+    async fn auth_handler(auth_result: Query<AuthResult>, State(auth_state): State<AuthState>) {
+        assert!(auth_result.state == auth_state.csrf_secret, "State received from OAuth provider does not match initial state, authentication aborted.");
+
+        let token = auth_state
+            .client
+            .exchange_code(AuthorizationCode::new(auth_result.code.clone()))
+            .set_pkce_verifier(PkceCodeVerifier::new(auth_state.pkce_code_verifier))
+            .request_async(async_http_client).await;
+        let client = auth_state.client;
+        let client = client.set_introspection_uri(IntrospectionUrl::from_url(Url::from_str("https://signin.services-staging.understand.ai/realms/understand.ai/protocol/openid-connect/token/introspect").unwrap()));
+        let result = client.introspect(token.unwrap().access_token()).unwrap().request(http_client);
+        let result = result.err().unwrap().to_string();
+        println!("------> {}", result);
+        // assert!(result.active(), "Access token inactive, authentication aborted");
     }
 
-    let app = Router::new().route("/", get(path)).with_state(csrf_state.secret().to_string());
+    let auth_state = AuthState {
+        client,
+        csrf_secret: csrf_state.secret().to_string(),
+        pkce_code_verifier: code_verifier.secret().to_string(),
+    };
+
+    let app = Router::new().route("/", get(auth_handler)).with_state(auth_state);
 
     let server = axum::Server::bind(&SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 8080))
         .serve(app.into_make_service());
