@@ -1,5 +1,6 @@
 use axum::extract::{Json, Path, Query, State};
 use url::Url;
+use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::str::FromStr;
@@ -62,15 +63,22 @@ pub async fn auth(
     async fn auth_handler(auth_result: Query<AuthResult>, State(auth_state): State<AuthState>) {
         assert!(auth_result.state == auth_state.csrf_secret, "State received from OAuth provider does not match initial state, authentication aborted.");
 
+        let auth_url = env::var("AUTH_URL").unwrap();
+        let keycloak_realm = env::var("KEYCLOAK_REALM").unwrap();
+
         let token = auth_state
             .client
             .exchange_code(AuthorizationCode::new(auth_result.code.clone()))
             .set_pkce_verifier(PkceCodeVerifier::new(auth_state.pkce_code_verifier))
-            .request_async(async_http_client).await;
+            .request_async(async_http_client).await.unwrap();
+
+        println!("Access token: {}", token.access_token().secret());
         let client = auth_state.client;
-        let client = client.set_introspection_uri(IntrospectionUrl::from_url(Url::from_str("https://signin.services-staging.understand.ai/realms/understand.ai/protocol/openid-connect/token/introspect").unwrap()));
-        let result = client.introspect(token.unwrap().access_token()).unwrap().request(http_client);
-        let result = result.err().unwrap().to_string();
+        let client = client.set_introspection_uri(IntrospectionUrl::new(format!("https://{}/auth/realms/{}/protocol/openid-connect/token/introspect", auth_url, keycloak_realm)).unwrap());
+
+        println!("Introspection uri: {}", client.introspection_url().unwrap().as_str());
+        let result = client.introspect(token.access_token()).unwrap().request_async(async_http_client);
+        let result = result.await.err().unwrap();
         println!("------> {}", result);
         // assert!(result.active(), "Access token inactive, authentication aborted");
     }
