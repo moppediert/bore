@@ -1,22 +1,24 @@
 use axum::extract::{Json, Path, Query, State};
-use url::Url;
+use axum::http::Request;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::str::FromStr;
+use url::Url;
 
 use anyhow::Result;
 use axum::routing::get;
 use axum::Router;
 use oauth2::basic::BasicClient;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, Scope, StandardRevocableToken, TokenResponse, TokenUrl, IntrospectionUrl, TokenIntrospectionResponse,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, IntrospectionUrl,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, Scope, StandardRevocableToken,
+    TokenIntrospectionResponse, TokenResponse, TokenUrl,
 };
 
-use oauth2::reqwest::{http_client, async_http_client};
+use oauth2::reqwest::{async_http_client, http_client};
+use reqwest;
 use serde::Deserialize;
-
 // TODO: handle error case, e.g. when user denies login
 #[derive(Deserialize)]
 struct AuthResult {
@@ -53,7 +55,7 @@ pub async fn auth(
     // Generate the full authorization URL.
     let (auth_url, csrf_state) = client
         .authorize_url(CsrfToken::new_random)
-        .add_scope(Scope::new("email".to_string()))
+        .add_scope(Scope::new("openid".to_string()))
         .set_pkce_challenge(code_challenge)
         .url();
 
@@ -70,17 +72,20 @@ pub async fn auth(
             .client
             .exchange_code(AuthorizationCode::new(auth_result.code.clone()))
             .set_pkce_verifier(PkceCodeVerifier::new(auth_state.pkce_code_verifier))
-            .request_async(async_http_client).await.unwrap();
+            .request_async(async_http_client)
+            .await
+            .unwrap();
 
         println!("Access token: {}", token.access_token().secret());
-        let client = auth_state.client;
-        let client = client.set_introspection_uri(IntrospectionUrl::new(format!("https://{}/auth/realms/{}/protocol/openid-connect/token/introspect", auth_url, keycloak_realm)).unwrap());
 
-        println!("Introspection uri: {}", client.introspection_url().unwrap().as_str());
-        let result = client.introspect(token.access_token()).unwrap().request_async(async_http_client);
-        let result = result.await.err().unwrap();
-        println!("------> {}", result);
-        // assert!(result.active(), "Access token inactive, authentication aborted");
+        let token_string = token.access_token().secret();
+
+        let client = reqwest::Client::builder().build().unwrap();
+        let response = client.get(format!("{}/realms/{}/protocol/openid-connect/userinfo", auth_url, keycloak_realm))
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", token_string))
+        .send().await.unwrap();
+        println!("Response: {}", response.text().await.unwrap());
     }
 
     let auth_state = AuthState {
@@ -89,7 +94,9 @@ pub async fn auth(
         pkce_code_verifier: code_verifier.secret().to_string(),
     };
 
-    let app = Router::new().route("/", get(auth_handler)).with_state(auth_state);
+    let app = Router::new()
+        .route("/", get(auth_handler))
+        .with_state(auth_state);
 
     let server = axum::Server::bind(&SocketAddr::new(IpAddr::from([0, 0, 0, 0]), 8080))
         .serve(app.into_make_service());
